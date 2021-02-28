@@ -1,6 +1,9 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{parse_macro_input, spanned::Spanned, Data, DeriveInput, Fields};
+use syn::{
+    parse_macro_input, spanned::Spanned, Data, DeriveInput, Fields, GenericArgument, PathArguments,
+    Type, TypePath,
+};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -36,7 +39,7 @@ fn gen_builder_fields(data: &Data) -> TokenStream {
             Fields::Named(fields) => {
                 let recurse = fields.named.iter().map(|f| {
                     let name = &f.ident;
-                    let ty = &f.ty;
+                    let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
                     quote_spanned! { f.span() =>
                         #name: Option<#ty>,
                     }
@@ -56,7 +59,7 @@ fn gen_builder_setters(data: &Data) -> TokenStream {
             Fields::Named(fields) => {
                 let recurse = fields.named.iter().map(|f| {
                     let name = &f.ident;
-                    let ty = &f.ty;
+                    let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
                     quote_spanned! { f.span() =>
                         fn #name(&mut self, #name: #ty) -> &mut Self {
                             self.#name = Some(#name);
@@ -79,8 +82,14 @@ fn gen_build_fields(data: &Data) -> TokenStream {
             Fields::Named(fields) => {
                 let recurse = fields.named.iter().map(|f| {
                     let name = &f.ident;
-                    quote_spanned! { f.span() =>
-                        #name: self.#name.take().ok_or(concat!("uninitialized field: ", stringify!(#name)))?,
+                    if type_as_option(&f.ty).is_some() {
+                        quote_spanned! { f.span() =>
+                            #name: self.#name.take(),
+                        }
+                    } else {
+                        quote_spanned! { f.span() =>
+                            #name: self.#name.take().ok_or(concat!("uninitialized field: ", stringify!(#name)))?,
+                        }
                     }
                 });
                 quote! { #(#recurse)* }
@@ -89,5 +98,22 @@ fn gen_build_fields(data: &Data) -> TokenStream {
             Fields::Unit => quote! {},
         },
         _ => panic!("Builder can only be derived at struct"),
+    }
+}
+
+/// If the type is literally as `Option<T>`, then return `Some(T)`, otherwise `None`.
+fn type_as_option(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Path(TypePath { qself: None, path }) => match path.segments.first() {
+            Some(ps) if ps.ident == "Option" => match &ps.arguments {
+                PathArguments::AngleBracketed(args) => match args.args.first() {
+                    Some(GenericArgument::Type(ty)) => Some(ty),
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+            _ => None,
+        },
+        _ => None,
     }
 }
