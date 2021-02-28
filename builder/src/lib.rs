@@ -9,6 +9,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let builder_name = format_ident!("{}Builder", name);
     let builder_fields = gen_builder_fields(&input.data);
     let builder_setters = gen_builder_setters(&input.data);
+    let build_fields = gen_build_fields(&input.data);
     let expanded = quote! {
         impl #name {
             pub fn builder() -> #builder_name {
@@ -21,6 +22,9 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
         impl #builder_name {
             #builder_setters
+            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+                Ok(#name { #build_fields })
+            }
         }
     };
     expanded.into()
@@ -39,7 +43,7 @@ fn gen_builder_fields(data: &Data) -> TokenStream {
                 });
                 quote! { #(#recurse)* }
             }
-            Fields::Unnamed(fields) => panic!("Builder can not be derived at tuples"),
+            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
             Fields::Unit => quote! {},
         },
         _ => panic!("Builder can only be derived at struct"),
@@ -62,7 +66,26 @@ fn gen_builder_setters(data: &Data) -> TokenStream {
                 });
                 quote! { #(#recurse)* }
             }
-            Fields::Unnamed(fields) => panic!("Builder can not be derived at tuples"),
+            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
+            Fields::Unit => quote! {},
+        },
+        _ => panic!("Builder can only be derived at struct"),
+    }
+}
+
+fn gen_build_fields(data: &Data) -> TokenStream {
+    match data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => {
+                let recurse = fields.named.iter().map(|f| {
+                    let name = &f.ident;
+                    quote_spanned! { f.span() =>
+                        #name: self.#name.take().ok_or(concat!("uninitialized field: ", stringify!(#name)))?,
+                    }
+                });
+                quote! { #(#recurse)* }
+            }
+            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
             Fields::Unit => quote! {},
         },
         _ => panic!("Builder can only be derived at struct"),
