@@ -5,20 +5,41 @@ use syn::{spanned::Spanned, *};
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    derive2(input)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+fn derive2(input: DeriveInput) -> Result<TokenStream> {
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => fields,
-            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
-            Fields::Unit => panic!("Builder is unnecessary for unit struct"),
+            Fields::Unnamed(_fields) => {
+                return Err(Error::new(
+                    input.span(),
+                    "Builder can not be derived at tuples",
+                ))
+            }
+            Fields::Unit => {
+                return Err(Error::new(
+                    input.span(),
+                    "Builder is unnecessary for unit struct",
+                ))
+            }
         },
-        _ => panic!("Builder can only be derived at struct"),
+        _ => {
+            return Err(Error::new(
+                input.span(),
+                "Builder can only be derived at struct",
+            ))
+        }
     };
     let name = input.ident;
     let builder_name = format_ident!("{}Builder", name);
-    let builder_fields = gen_builder_fields(fields);
-    let builder_setters = gen_builder_setters(fields);
-    let build_fields = gen_build_fields(fields);
-    let expanded = quote! {
+    let builder_fields = gen_builder_fields(fields)?;
+    let builder_setters = gen_builder_setters(fields)?;
+    let build_fields = gen_build_fields(fields)?;
+    Ok(quote! {
         impl #name {
             pub fn builder() -> #builder_name {
                 #builder_name::default()
@@ -34,15 +55,15 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 Ok(#name { #build_fields })
             }
         }
-    };
-    expanded.into()
+    })
 }
 
-fn gen_builder_fields(fields: &FieldsNamed) -> TokenStream {
-    let recurse = fields.named.iter().map(|f| {
+fn gen_builder_fields(fields: &FieldsNamed) -> Result<TokenStream> {
+    let mut recurse = vec![];
+    for f in fields.named.iter() {
         let name = &f.ident;
-        let attr = BuilderAttrs::parse_from(&f.attrs);
-        if attr.each.is_some() {
+        let attr = BuilderAttrs::parse_from(&f.attrs)?;
+        let expanded = if attr.each.is_some() {
             let ty = &f.ty;
             assert!(
                 type_as_vec(ty).is_some(),
@@ -56,16 +77,18 @@ fn gen_builder_fields(fields: &FieldsNamed) -> TokenStream {
             quote_spanned! { f.span() =>
                 #name: Option<#ty>,
             }
-        }
-    });
-    quote! { #(#recurse)* }
+        };
+        recurse.push(expanded);
+    }
+    Ok(quote! { #(#recurse)* })
 }
 
-fn gen_builder_setters(fields: &FieldsNamed) -> TokenStream {
-    let recurse = fields.named.iter().map(|f| {
+fn gen_builder_setters(fields: &FieldsNamed) -> Result<TokenStream> {
+    let mut recurse = vec![];
+    for f in fields.named.iter() {
         let name = &f.ident;
-        let attr = BuilderAttrs::parse_from(&f.attrs);
-        if let Some(each) = attr.each {
+        let attr = BuilderAttrs::parse_from(&f.attrs)?;
+        let expanded = if let Some(each) = attr.each {
             let each = format_ident!("{}", each);
             let ty_in_vec = type_as_vec(&f.ty).unwrap();
             quote_spanned! { f.span() =>
@@ -82,16 +105,18 @@ fn gen_builder_setters(fields: &FieldsNamed) -> TokenStream {
                     self
                 }
             }
-        }
-    });
-    quote! { #(#recurse)* }
+        };
+        recurse.push(expanded);
+    }
+    Ok(quote! { #(#recurse)* })
 }
 
-fn gen_build_fields(fields: &FieldsNamed) -> TokenStream {
-    let recurse = fields.named.iter().map(|f| {
+fn gen_build_fields(fields: &FieldsNamed) -> Result<TokenStream> {
+    let mut recurse = vec![];
+    for f in fields.named.iter() {
         let name = &f.ident;
-        let attr = BuilderAttrs::parse_from(&f.attrs);
-        if attr.each.is_some() || type_as_option(&f.ty).is_some() {
+        let attr = BuilderAttrs::parse_from(&f.attrs)?;
+        let expanded = if attr.each.is_some() || type_as_option(&f.ty).is_some() {
             quote_spanned! { f.span() =>
                 #name: std::mem::take(&mut self.#name),
             }
@@ -99,9 +124,10 @@ fn gen_build_fields(fields: &FieldsNamed) -> TokenStream {
             quote_spanned! { f.span() =>
                 #name: self.#name.take().ok_or(concat!("uninitialized field: ", stringify!(#name)))?,
             }
-        }
-    });
-    quote! { #(#recurse)* }
+        };
+        recurse.push(expanded);
+    }
+    Ok(quote! { #(#recurse)* })
 }
 
 /// If the type is literally as `Option<T>`, then return `Some(T)`, otherwise `None`.
@@ -137,7 +163,7 @@ struct BuilderAttrs {
 }
 
 impl BuilderAttrs {
-    fn parse_from(attrs: &[Attribute]) -> Self {
+    fn parse_from(attrs: &[Attribute]) -> Result<Self> {
         let mut ret = BuilderAttrs { each: None };
         let attr = attrs.iter().find(|attr| {
             if let Some(ps) = attr.path.segments.first() {
@@ -148,31 +174,39 @@ impl BuilderAttrs {
         });
         let attr = match attr {
             Some(x) => x,
-            None => return ret,
+            None => return Ok(ret),
         };
         let list = match attr.parse_meta().unwrap() {
             Meta::List(list) => list,
-            _ => panic!("invalid attribute format"),
+            _ => return Err(Error::new(attr.span(), "invalid attribute format")),
         };
-        for meta in list.nested {
+        for meta in &list.nested {
             match meta {
-                NestedMeta::Meta(meta) => match meta {
+                NestedMeta::Meta(meta) => match &meta {
                     Meta::NameValue(nv) => {
                         let ps = nv.path.segments.first().unwrap();
                         if ps.ident == "each" {
-                            match nv.lit {
+                            match &nv.lit {
                                 Lit::Str(s) => ret.each = Some(s.value()),
                                 _ => {
-                                    panic!("the type of 'each' attribute should be string literal")
+                                    return Err(Error::new(
+                                        attr.span(),
+                                        "the type of 'each' attribute should be string literal",
+                                    ))
                                 }
                             }
+                        } else {
+                            return Err(Error::new(
+                                attr.span(),
+                                "expected `builder(each = \"...\")`",
+                            ));
                         }
                     }
-                    _ => panic!("invalid attribute format"),
+                    _ => return Err(Error::new(attr.span(), "invalid attribute format")),
                 },
-                _ => panic!("invalid attribute format"),
+                _ => return Err(Error::new(attr.span(), "invalid attribute format")),
             }
         }
-        ret
+        Ok(ret)
     }
 }
