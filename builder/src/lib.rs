@@ -1,18 +1,23 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{
-    parse_macro_input, spanned::Spanned, Data, DeriveInput, Fields, GenericArgument, PathArguments,
-    Type, TypePath,
-};
+use syn::{spanned::Spanned, *};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => fields,
+            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
+            Fields::Unit => panic!("Builder is unnecessary for unit struct"),
+        },
+        _ => panic!("Builder can only be derived at struct"),
+    };
     let name = input.ident;
     let builder_name = format_ident!("{}Builder", name);
-    let builder_fields = gen_builder_fields(&input.data);
-    let builder_setters = gen_builder_setters(&input.data);
-    let build_fields = gen_build_fields(&input.data);
+    let builder_fields = gen_builder_fields(fields);
+    let builder_setters = gen_builder_setters(fields);
+    let build_fields = gen_build_fields(fields);
     let expanded = quote! {
         impl #name {
             pub fn builder() -> #builder_name {
@@ -33,72 +38,45 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expanded.into()
 }
 
-fn gen_builder_fields(data: &Data) -> TokenStream {
-    match data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let recurse = fields.named.iter().map(|f| {
-                    let name = &f.ident;
-                    let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
-                    quote_spanned! { f.span() =>
-                        #name: Option<#ty>,
-                    }
-                });
-                quote! { #(#recurse)* }
-            }
-            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
-            Fields::Unit => quote! {},
-        },
-        _ => panic!("Builder can only be derived at struct"),
-    }
+fn gen_builder_fields(fields: &FieldsNamed) -> TokenStream {
+    let recurse = fields.named.iter().map(|f| {
+        let name = &f.ident;
+        let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
+        quote_spanned! { f.span() =>
+            #name: Option<#ty>,
+        }
+    });
+    quote! { #(#recurse)* }
 }
 
-fn gen_builder_setters(data: &Data) -> TokenStream {
-    match data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let recurse = fields.named.iter().map(|f| {
-                    let name = &f.ident;
-                    let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
-                    quote_spanned! { f.span() =>
-                        fn #name(&mut self, #name: #ty) -> &mut Self {
-                            self.#name = Some(#name);
-                            self
-                        }
-                    }
-                });
-                quote! { #(#recurse)* }
+fn gen_builder_setters(fields: &FieldsNamed) -> TokenStream {
+    let recurse = fields.named.iter().map(|f| {
+        let name = &f.ident;
+        let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
+        quote_spanned! { f.span() =>
+            fn #name(&mut self, #name: #ty) -> &mut Self {
+                self.#name = Some(#name);
+                self
             }
-            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
-            Fields::Unit => quote! {},
-        },
-        _ => panic!("Builder can only be derived at struct"),
-    }
+        }
+    });
+    quote! { #(#recurse)* }
 }
 
-fn gen_build_fields(data: &Data) -> TokenStream {
-    match data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let recurse = fields.named.iter().map(|f| {
-                    let name = &f.ident;
-                    if type_as_option(&f.ty).is_some() {
-                        quote_spanned! { f.span() =>
-                            #name: self.#name.take(),
-                        }
-                    } else {
-                        quote_spanned! { f.span() =>
-                            #name: self.#name.take().ok_or(concat!("uninitialized field: ", stringify!(#name)))?,
-                        }
-                    }
-                });
-                quote! { #(#recurse)* }
+fn gen_build_fields(fields: &FieldsNamed) -> TokenStream {
+    let recurse = fields.named.iter().map(|f| {
+        let name = &f.ident;
+        if type_as_option(&f.ty).is_some() {
+            quote_spanned! { f.span() =>
+                #name: self.#name.take(),
             }
-            Fields::Unnamed(_fields) => panic!("Builder can not be derived at tuples"),
-            Fields::Unit => quote! {},
-        },
-        _ => panic!("Builder can only be derived at struct"),
-    }
+        } else {
+            quote_spanned! { f.span() =>
+                #name: self.#name.take().ok_or(concat!("uninitialized field: ", stringify!(#name)))?,
+            }
+        }
+    });
+    quote! { #(#recurse)* }
 }
 
 /// If the type is literally as `Option<T>`, then return `Some(T)`, otherwise `None`.
