@@ -1,3 +1,4 @@
+use darling::FromMeta;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{spanned::Spanned, *};
@@ -158,13 +159,14 @@ fn match_type<'a>(ty: &'a Type, ty_name: &str) -> Option<&'a Type> {
 }
 
 /// Attributes of field for builder.
+#[derive(Default, FromMeta)]
+#[darling(default)]
 struct BuilderAttrs {
     each: Option<String>,
 }
 
 impl BuilderAttrs {
     fn parse_from(attrs: &[Attribute]) -> Result<Self> {
-        let mut ret = BuilderAttrs { each: None };
         let attr = attrs.iter().find(|attr| {
             if let Some(ps) = attr.path.segments.first() {
                 ps.ident == "builder"
@@ -174,39 +176,11 @@ impl BuilderAttrs {
         });
         let attr = match attr {
             Some(x) => x,
-            None => return Ok(ret),
+            None => return Ok(Self::default()),
         };
-        let list = match attr.parse_meta().unwrap() {
-            Meta::List(list) => list,
-            _ => return Err(Error::new(attr.span(), "invalid attribute format")),
-        };
-        for meta in &list.nested {
-            match meta {
-                NestedMeta::Meta(meta) => match &meta {
-                    Meta::NameValue(nv) => {
-                        let ps = nv.path.segments.first().unwrap();
-                        if ps.ident == "each" {
-                            match &nv.lit {
-                                Lit::Str(s) => ret.each = Some(s.value()),
-                                _ => {
-                                    return Err(Error::new(
-                                        attr.span(),
-                                        "the type of 'each' attribute should be string literal",
-                                    ))
-                                }
-                            }
-                        } else {
-                            return Err(Error::new(
-                                attr.span(),
-                                "expected `builder(each = \"...\")`",
-                            ));
-                        }
-                    }
-                    _ => return Err(Error::new(attr.span(), "invalid attribute format")),
-                },
-                _ => return Err(Error::new(attr.span(), "invalid attribute format")),
-            }
-        }
+        let meta = attr.parse_meta().unwrap();
+        let ret = Self::from_meta(&meta)
+            .map_err(|_| Error::new(attr.span(), "expected `builder(each = \"...\")`"))?;
         Ok(ret)
     }
 }
