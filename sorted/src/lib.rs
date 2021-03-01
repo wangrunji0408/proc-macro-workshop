@@ -6,15 +6,18 @@ use syn::{spanned::Spanned, *};
 #[proc_macro_attribute]
 pub fn sorted(args: TokenStream1, input: TokenStream1) -> TokenStream1 {
     let input = parse_macro_input!(input as Item);
-    sorted2(args.into(), input)
-        .unwrap_or_else(Error::into_compile_error)
+    sorted2(args.into(), &input)
+        .unwrap_or_else(|e| {
+            let ce = e.into_compile_error();
+            quote! { #input #ce }
+        })
         .into()
 }
 
-fn sorted2(args: TokenStream, input: Item) -> Result<TokenStream> {
+fn sorted2(args: TokenStream, input: &Item) -> Result<TokenStream> {
     let _ = args;
 
-    match &input {
+    match input {
         Item::Enum(item) => {
             for i in 1..item.variants.len() {
                 let last_ident = &item.variants[i - 1].ident;
