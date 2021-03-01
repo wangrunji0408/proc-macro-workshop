@@ -51,7 +51,7 @@ fn derive2(input: DeriveInput) -> Result<TokenStream> {
         }
         impl #builder_name {
             #builder_setters
-            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn std::error::Error>> {
                 Ok(#name { #build_fields })
             }
         }
@@ -75,7 +75,7 @@ fn gen_builder_fields(fields: &FieldsNamed) -> Result<TokenStream> {
         } else {
             let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
             quote_spanned! { f.span() =>
-                #name: Option<#ty>,
+                #name: std::option::Option<#ty>,
             }
         };
         recurse.push(expanded);
@@ -101,7 +101,7 @@ fn gen_builder_setters(fields: &FieldsNamed) -> Result<TokenStream> {
             let ty = type_as_option(&f.ty).unwrap_or(&f.ty);
             quote_spanned! { f.span() =>
                 fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = Some(#name);
+                    self.#name = std::option::Option::Some(#name);
                     self
                 }
             }
